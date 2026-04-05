@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Streaming Analytics on Netflix Viewership Data</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+  :root {
+    --red:     #E50914;
+    --red-dim: #8B0000;
+    --gold:    #F5A623;
+    --blue:    #00B4D8;
+    --bg:      #080808;
+    --surface: #111111;
+    --card:    #181818;
+    --border:  #2a2a2a;
+    --text:    #e5e5e5;
+    --muted:   #888;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* noise texture overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── HEADER ── */
+  header {
+    position: relative;
+    padding: 48px 48px 32px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #0d0000 0%, transparent 100%);
+    z-index: 1;
+  }
+
+  .header-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  .logo {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 2rem;
+    color: var(--red);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+
+  .meta {
+    text-align: right;
+    font-size: 0.78rem;
+    color: var(--muted);
+    line-height: 1.8;
+  }
+
+  h1 {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(2.2rem, 5vw, 4rem);
+    letter-spacing: 2px;
+    margin-top: 16px;
+    line-height: 1;
+  }
+
+  h1 span { color: var(--red); }
+
+  .subtitle {
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 0.9rem;
+    font-weight: 300;
+    letter-spacing: 1px;
+  }
+
+  /* ── LOADING ── */
+  #loader {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 999;
+    gap: 20px;
+    transition: opacity 0.5s;
+  }
+
+  #loader.hide { opacity: 0; pointer-events: none; }
+
+  .loader-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 2.5rem;
+    color: var(--red);
+    letter-spacing: 4px;
+  }
+
+  .progress-bar {
+    width: 260px;
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: var(--red);
+    border-radius: 2px;
+    animation: load 2.2s ease forwards;
+  }
+
+  @keyframes load { from { width: 0 } to { width: 100% } }
+
+  .loader-status {
+    font-size: 0.8rem;
+    color: var(--muted);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  /* ── STATS ROW ── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    position: relative;
+    z-index: 1;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    padding: 28px 32px;
+    transition: background 0.2s;
+  }
+
+  .stat-card:hover { background: var(--card); }
+
+  .stat-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .stat-value {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 2.6rem;
+    color: var(--text);
+    line-height: 1;
+  }
+
+  .stat-value.red  { color: var(--red); }
+  .stat-value.gold { color: var(--gold); }
+  .stat-value.blue { color: var(--blue); }
+
+  .stat-sub {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  /* ── MAIN GRID ── */
+  .dashboard {
+    padding: 40px 48px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .chart-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 28px;
+    opacity: 0;
+    transform: translateY(20px);
+    animation: fadeUp 0.5s ease forwards;
+  }
+
+  .chart-card.wide { grid-column: 1 / -1; }
+
+  @keyframes fadeUp {
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .chart-card:nth-child(1) { animation-delay: 0.1s; }
+  .chart-card:nth-child(2) { animation-delay: 0.2s; }
+  .chart-card:nth-child(3) { animation-delay: 0.3s; }
+  .chart-card:nth-child(4) { animation-delay: 0.4s; }
+  .chart-card:nth-child(5) { animation-delay: 0.5s; }
+  .chart-card:nth-child(6) { animation-delay: 0.6s; }
+  .chart-card:nth-child(7) { animation-delay: 0.7s; }
+
+  .card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    gap: 12px;
+  }
+
+  .card-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 1.3rem;
+    letter-spacing: 1.5px;
+    color: var(--text);
+  }
+
+  .card-exp {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--red);
+    background: rgba(229,9,20,0.1);
+    border: 1px solid rgba(229,9,20,0.3);
+    padding: 3px 10px;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+
+  .card-desc {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 18px;
+    line-height: 1.5;
+    font-weight: 300;
+  }
+
+  .chart-wrap {
+    position: relative;
+    width: 100%;
+  }
+
+  /* ── FILTER BAR ── */
+  .filter-bar {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+
+  .filter-btn {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.75rem;
+    padding: 6px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 2px;
+    cursor: pointer;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    transition: all 0.15s;
+  }
+
+  .filter-btn:hover, .filter-btn.active {
+    background: var(--red);
+    border-color: var(--red);
+    color: white;
+  }
+
+  /* ── STATS TABLE (EXP 6) ── */
+  .stats-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+
+  .stats-table th {
+    text-align: left;
+    padding: 10px 14px;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    font-weight: 400;
+  }
+
+  .stats-table td {
+    padding: 12px 14px;
+    border-bottom: 1px solid #1a1a1a;
+    color: var(--text);
+  }
+
+  .stats-table tr:last-child td { border-bottom: none; }
+
+  .stats-table td:first-child { color: var(--gold); font-weight: 500; }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 2px;
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 1px;
+  }
+
+  .badge.neg { background: rgba(229,9,20,0.15); color: var(--red); }
+  .badge.pos { background: rgba(0,180,216,0.15); color: var(--blue); }
+
+  /* ── FOOTER ── */
+  footer {
+    padding: 32px 48px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.75rem;
+    color: var(--muted);
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 900px) {
+    .dashboard { grid-template-columns: 1fr; padding: 24px; }
+    .chart-card.wide { grid-column: 1; }
+    .stats-row { grid-template-columns: repeat(2, 1fr); }
+    header { padding: 28px 24px 20px; }
+    footer { padding: 24px; flex-direction: column; gap: 8px; text-align: center; }
+  }
+</style>
+</head>
+<body>
+
+<!-- LOADER -->
+<div id="loader">
+  <div class="loader-title">NETFLIX ANALYTICS</div>
+  <div class="progress-bar"><div class="progress-fill"></div></div>
+  <div class="loader-status">Fetching dataset...</div>
+</div>
+
+<!-- HEADER -->
+<header>
+  <div class="header-top">
+    <div class="logo">&#9654; Netflix Analytics</div>
+    <div class="meta">
+      Roll No: 16014223083 &nbsp;|&nbsp; Batch B3<br>
+      Sohom Mallick<br>
+      KJSSE AI-DS TYBTech SEM-VI &nbsp;|&nbsp; 2025–26<br>
+      Mini Project- Data Analytics Lab
+    </div>
+  </div>
+  <h1>Streaming Analytics on<br><span>Netflix Viewership Data</span></h1>
+  <p class="subtitle">All 6 experiments visualized &nbsp;·&nbsp; Dataset loaded live from open CSV</p>
+</header>
+
+<!-- STATS ROW -->
+<div class="stats-row" id="statsRow">
+  <div class="stat-card">
+    <div class="stat-label">Total Titles</div>
+    <div class="stat-value red" id="statTotal">—</div>
+    <div class="stat-sub">in dataset</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Movies</div>
+    <div class="stat-value" id="statMovies">—</div>
+    <div class="stat-sub">individual films</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">TV Shows</div>
+    <div class="stat-value gold" id="statShows">—</div>
+    <div class="stat-sub">series</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Countries</div>
+    <div class="stat-value blue" id="statCountries">—</div>
+    <div class="stat-sub">represented</div>
+  </div>
+</div>
+
+<!-- DASHBOARD -->
+<div class="dashboard">
+
+  <!-- EXP 1a: Box Plot — Duration by Rating -->
+  <div class="chart-card">
+    <div class="card-header">
+      <div class="card-title">Movie Duration by Rating</div>
+      <div class="card-exp">Exp 01 · Box Plot</div>
+    </div>
+    <p class="card-desc">Q1, Median, Q3, IQR and outliers of movie duration grouped by content rating.</p>
+    <div class="chart-wrap" style="height:300px">
+      <canvas id="boxChart"></canvas>
+    </div>
+  </div>
+
+  <!-- EXP 1b: Movies vs TV Shows -->
+  <div class="chart-card">
+    <div class="card-header">
+      <div class="card-title">Content Type Breakdown</div>
+      <div class="card-exp">Exp 01 · Distribution</div>
+    </div>
+    <p class="card-desc">Spread of content types across Netflix catalog. Outliers shown as individual points.</p>
+    <div class="chart-wrap" style="height:300px">
+      <canvas id="typeChart"></canvas>
+    </div>
+  </div>
+
+  <!-- EXP 2: Linear Regression -->
+  <div class="chart-card wide">
+    <div class="card-header">
+      <div class="card-title">Content Growth Over Years — Linear Regression</div>
+      <div class="card-exp">Exp 02 · Regression</div>
+    </div>
+    <p class="card-desc">Y = β₀ + β₁X &nbsp;·&nbsp; Titles added per year (2010–2021) with OLS best-fit line and R² value.</p>
+    <div class="chart-wrap" style="height:280px">
+      <canvas id="regressionChart"></canvas>
+    </div>
+  </div>
+
+  <!-- EXP 3: Sampling -->
+  <div class="chart-card">
+    <div class="card-header">
+      <div class="card-title">Sampling Techniques</div>
+      <div class="card-exp">Exp 03 · Sampling</div>
+    </div>
+    <p class="card-desc">Rating distribution comparison across Simple Random, Systematic, Stratified and Convenience sampling.</p>
+    <div class="filter-bar" id="samplingFilter">
+      <button class="filter-btn active" data-sample="random">Random</button>
+      <button class="filter-btn" data-sample="systematic">Systematic</button>
+      <button class="filter-btn" data-sample="stratified">Stratified</button>
+      <button class="filter-btn" data-sample="convenience">Convenience</button>
+    </div>
+    <div class="chart-wrap" style="height:240px">
+      <canvas id="samplingChart"></canvas>
+    </div>
+  </div>
+
+  <!-- EXP 4: Clustering -->
+  <div class="chart-card">
+    <div class="card-header">
+      <div class="card-title">K-Means Clustering (K=4)</div>
+      <div class="card-exp">Exp 04 · Clustering</div>
+    </div>
+    <p class="card-desc">Movies segmented by release year and duration using K-Means. Cluster centroids marked with ✕.</p>
+    <div class="chart-wrap" style="height:290px">
+      <canvas id="clusterChart"></canvas>
+    </div>
+  </div>
+
+  <!-- EXP 5: Probability Distribution -->
+  <div class="chart-card">
+    <div class="card-header">
+      <div class="card-title">Probability Distribution — Release Year</div>
+      <div class="card-exp">Exp 05 · PDF / CDF</div>
+    </div>
+    <p class="card-desc">Histogram (PDF approximation) of release year as a continuous random variable.</p>
+    <div class="filter-bar" id="distFilter">
+      <button class="filter-btn active" data-dist="pdf">PDF</button>
+      <button class="filter-btn" data-dist="cdf">CDF</button>
+    </div>
+    <div class="chart-wrap" style="height:250px">
+      <canvas id="distChart"></canvas>
+    </div>
+  </div>
+
+  <!-- EXP 6: Statistical Properties Table -->
+  <div class="chart-card">
+    <div class="card-header">
+      <div class="card-title">Statistical Properties</div>
+      <div class="card-exp">Exp 06 · Stats</div>
+    </div>
+    <p class="card-desc">Mean, Variance, Std Dev, Skewness and Kurtosis computed for key variables.</p>
+    <table class="stats-table" id="statsTable">
+      <thead>
+        <tr>
+          <th>Variable</th>
+          <th>Mean</th>
+          <th>Std Dev</th>
+          <th>Skewness</th>
+          <th>Kurtosis</th>
+        </tr>
+      </thead>
+      <tbody id="statsTableBody">
+        <tr><td colspan="5" style="color:var(--muted);padding:20px">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Top Genres -->
+  <div class="chart-card">
+    <div class="card-header">
+      <div class="card-title">Top 10 Genres on Netflix</div>
+      <div class="card-exp">EDA · Content</div>
+    </div>
+    <p class="card-desc">Most common genres listed across all Netflix titles in the dataset.</p>
+    <div class="chart-wrap" style="height:300px">
+      <canvas id="genreChart"></canvas>
+    </div>
+  </div>
+
+  <!-- Monthly additions -->
+  <div class="chart-card">
+    <div class="card-header">
+      <div class="card-title">Titles Added by Month</div>
+      <div class="card-exp">EDA · Trends</div>
+    </div>
+    <p class="card-desc">Which months see the most content added to Netflix across all years.</p>
+    <div class="chart-wrap" style="height:300px">
+      <canvas id="monthChart"></canvas>
+    </div>
+  </div>
+
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div>Streaming Analytics on Netflix Viewership Data &nbsp;·&nbsp; Sohom Mallick · 16014223083 · Batch B3</div>
+  <div>Dataset: Netflix Movies & TV Shows · rfordatascience/tidytuesday</div>
+</footer>
+
+<script>
+// ── Helpers ──────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const COLORS = {
+  red:  '#E50914', gold: '#F5A623', blue: '#00B4D8',
+  purple: '#9B59B6', green: '#2ECC71', teal: '#1ABC9C'
+};
+const CHART_DEFAULTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { labels: { color: '#888', font: { family: 'DM Sans', size: 11 } } } },
+  scales: {
+    x: { ticks: { color: '#666', font: { family: 'DM Sans', size: 10 } }, grid: { color: '#1e1e1e' } },
+    y: { ticks: { color: '#666', font: { family: 'DM Sans', size: 10 } }, grid: { color: '#1e1e1e' } }
+  }
+};
+
+// ── Stats helpers ────────────────────────────────────────────
+function mean(arr)   { return arr.reduce((a,b)=>a+b,0)/arr.length; }
+function variance(arr) {
+  const m = mean(arr);
+  return arr.reduce((a,b)=>a+(b-m)**2,0)/arr.length;
+}
+function stddev(arr) { return Math.sqrt(variance(arr)); }
+function skewness(arr) {
+  const m = mean(arr), s = stddev(arr);
+  return arr.reduce((a,b)=>a+((b-m)/s)**3,0)/arr.length;
+}
+function kurtosis(arr) {
+  const m = mean(arr), s = stddev(arr);
+  return arr.reduce((a,b)=>a+((b-m)/s)**4,0)/arr.length - 3;
+}
+
+// ── K-Means (simple JS implementation) ──────────────────────
+function kMeans(points, k, iters=50) {
+  let centroids = points.slice(0, k).map(p => [...p]);
+  let labels = new Array(points.length).fill(0);
+  for (let it = 0; it < iters; it++) {
+    // Assign
+    labels = points.map(p => {
+      let best = 0, bestD = Infinity;
+      centroids.forEach((c,i) => {
+        const d = Math.hypot(p[0]-c[0], p[1]-c[1]);
+        if (d < bestD) { bestD = d; best = i; }
+      });
+      return best;
+    });
+    // Update
+    centroids = centroids.map((_,i) => {
+      const grp = points.filter((_,j) => labels[j]===i);
+      if (!grp.length) return centroids[i];
+      return [mean(grp.map(p=>p[0])), mean(grp.map(p=>p[1]))];
+    });
+  }
+  return { labels, centroids };
+}
+
+// ── Load & Process ───────────────────────────────────────────
+const CSV_URL = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2021/2021-04-20/netflix_titles.csv";
+
+Papa.parse(CSV_URL, {
+  download: true,
+  header: true,
+  skipEmptyLines: true,
+  complete: function(results) {
+    const raw = results.data;
+
+    // Clean
+    const data = raw.filter(r => r.rating && r.duration && r.type);
+    data.forEach(r => {
+      r.duration_num = parseInt(r.duration);
+      r.release_year = parseInt(r.release_year);
+      const d = new Date(r.date_added);
+      r.year_added  = isNaN(d) ? null : d.getFullYear();
+      r.month_added = isNaN(d) ? null : d.getMonth()+1;
+    });
+
+    const movies = data.filter(r => r.type === "Movie");
+    const shows  = data.filter(r => r.type === "TV Show");
+
+    // ── Stat cards ───────────────────────────────────────────
+    $('statTotal').textContent     = data.length.toLocaleString();
+    $('statMovies').textContent    = movies.length.toLocaleString();
+    $('statShows').textContent     = shows.length.toLocaleString();
+    $('statCountries').textContent = new Set(data.map(r=>r.country).filter(Boolean)).size;
+
+    // ── EXP 1a: Box Plot — duration by rating ─────────────
+    const ratingOrder = ['G','PG','PG-13','R','TV-Y','TV-Y7','TV-G','TV-PG','TV-14','TV-MA','NR','UR'];
+    const topRatings  = Object.entries(
+      movies.reduce((acc,r)=>{ acc[r.rating]=(acc[r.rating]||0)+1; return acc; },{})
+    ).sort((a,b)=>b[1]-a[1]).slice(0,7).map(e=>e[0]);
+
+    function boxStats(arr) {
+      const s = arr.slice().sort((a,b)=>a-b);
+      const q1 = s[Math.floor(s.length*0.25)];
+      const q2 = s[Math.floor(s.length*0.50)];
+      const q3 = s[Math.floor(s.length*0.75)];
+      const iqr = q3-q1;
+      return { min: q1-1.5*iqr, q1, q2, q3, max: q3+1.5*iqr };
+    }
+
+    const boxData = topRatings.map(r => {
+      const durs = movies.filter(m=>m.rating===r).map(m=>m.duration_num).filter(Boolean);
+      return boxStats(durs);
+    });
+
+    new Chart($('boxChart'), {
+      type: 'bar',
+      data: {
+        labels: topRatings,
+        datasets: [
+          {
+            label: 'Q1–Q3 (IQR)',
+            data: boxData.map(b => b.q3 - b.q1),
+            backgroundColor: 'rgba(229,9,20,0.35)',
+            borderColor: COLORS.red,
+            borderWidth: 1,
+          },
+          {
+            label: 'Median',
+            data: boxData.map(b => b.q2),
+            type: 'line',
+            borderColor: COLORS.gold,
+            borderWidth: 2,
+            pointBackgroundColor: COLORS.gold,
+            fill: false,
+            tension: 0.3,
+          }
+        ]
+      },
+      options: { ...CHART_DEFAULTS,
+        plugins: { ...CHART_DEFAULTS.plugins,
+          tooltip: { callbacks: {
+            afterBody: (items) => {
+              const i = items[0].dataIndex;
+              const b = boxData[i];
+              return [`Q1: ${b.q1}`, `Median: ${b.q2}`, `Q3: ${b.q3}`, `IQR: ${b.q3-b.q1}`];
+            }
+          }}
+        },
+        scales: { ...CHART_DEFAULTS.scales, y: { ...CHART_DEFAULTS.scales.y, title: { display: true, text: 'Duration (min)', color: '#555' } } }
+      }
+    });
+
+    // ── EXP 1b: Content Type Doughnut ────────────────────
+    new Chart($('typeChart'), {
+      type: 'doughnut',
+      data: {
+        labels: ['Movies', 'TV Shows'],
+        datasets: [{
+          data: [movies.length, shows.length],
+          backgroundColor: [COLORS.red, COLORS.blue],
+          borderColor: '#111',
+          borderWidth: 3,
+          hoverOffset: 8
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        cutout: '65%',
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#888', font: { family: 'DM Sans', size: 11 }, padding: 20 } },
+          tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${ctx.parsed} (${(ctx.parsed/data.length*100).toFixed(1)}%)` } }
+        }
+      }
+    });
+
+    // ── EXP 2: Linear Regression ────────────────────────
+    const yearly = {};
+    data.forEach(r => { if (r.year_added >= 2010 && r.year_added <= 2021) yearly[r.year_added] = (yearly[r.year_added]||0)+1; });
+    const years  = Object.keys(yearly).map(Number).sort();
+    const counts = years.map(y => yearly[y]);
+
+    // OLS
+    const n   = years.length;
+    const xm  = mean(years), ym = mean(counts);
+    const b1  = years.reduce((s,x,i)=>s+(x-xm)*(counts[i]-ym),0) / years.reduce((s,x)=>s+(x-xm)**2,0);
+    const b0  = ym - b1*xm;
+    const yhat = years.map(x => b0+b1*x);
+    const ss_res = counts.reduce((s,y,i)=>s+(y-yhat[i])**2,0);
+    const ss_tot = counts.reduce((s,y)=>s+(y-ym)**2,0);
+    const r2 = (1 - ss_res/ss_tot).toFixed(4);
+
+    new Chart($('regressionChart'), {
+      type: 'scatter',
+      data: {
+        datasets: [
+          {
+            label: 'Actual Titles Added',
+            data: years.map((x,i)=>({x,y:counts[i]})),
+            backgroundColor: COLORS.red,
+            pointRadius: 7,
+            pointHoverRadius: 9,
+          },
+          {
+            label: `Regression Line  y = ${b1.toFixed(2)}x + (${b0.toFixed(0)})   R² = ${r2}`,
+            data: years.map((x,i)=>({x,y:yhat[i]})),
+            type: 'line',
+            borderColor: COLORS.gold,
+            borderWidth: 2,
+            pointRadius: 0,
+            fill: false,
+            tension: 0,
+          }
+        ]
+      },
+      options: { ...CHART_DEFAULTS,
+        scales: {
+          x: { ...CHART_DEFAULTS.scales.x, title: { display: true, text: 'Year (X)', color: '#555' } },
+          y: { ...CHART_DEFAULTS.scales.y, title: { display: true, text: 'Titles Added (Y)', color: '#555' } }
+        }
+      }
+    });
+
+    // ── EXP 3: Sampling ──────────────────────────────────
+    function ratingDist(sample) {
+      const freq = {};
+      sample.forEach(r => { freq[r.rating]=(freq[r.rating]||0)+1; });
+      return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,7);
+    }
+
+    const k = Math.floor(data.length/200);
+    const samples = {
+      random:      data.sort(()=>Math.random()-0.5).slice(0,200),
+      systematic:  data.filter((_,i)=>i%k===0).slice(0,200),
+      stratified:  [...movies.slice(0,Math.floor(200*movies.length/data.length)),
+                    ...shows.slice(0,Math.floor(200*shows.length/data.length))],
+      convenience: data.slice(0,200)
+    };
+
+    let samplingChart = null;
+
+    function drawSampling(type) {
+      const dist = ratingDist(samples[type]);
+      const labels = dist.map(e=>e[0]);
+      const vals   = dist.map(e=>e[1]);
+      if (samplingChart) samplingChart.destroy();
+      samplingChart = new Chart($('samplingChart'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{ label: 'Count', data: vals,
+            backgroundColor: 'rgba(0,180,216,0.4)',
+            borderColor: COLORS.blue, borderWidth: 1 }]
+        },
+        options: { ...CHART_DEFAULTS, plugins: { legend: { display: false } } }
+      });
+    }
+
+    drawSampling('random');
+    document.querySelectorAll('#samplingFilter .filter-btn').forEach(btn => {
+      btn.addEventListener('click', function() {
+        document.querySelectorAll('#samplingFilter .filter-btn').forEach(b=>b.classList.remove('active'));
+        this.classList.add('active');
+        drawSampling(this.dataset.sample);
+      });
+    });
+
+    // ── EXP 4: K-Means Clustering ───────────────────────
+    const clusterData = movies
+      .filter(m => m.release_year && m.duration_num)
+      .map(m => [m.release_year, m.duration_num]);
+
+    // Normalize
+    const ryMean = mean(clusterData.map(p=>p[0])), ryStd = stddev(clusterData.map(p=>p[0]));
+    const dmMean = mean(clusterData.map(p=>p[1])), dmStd = stddev(clusterData.map(p=>p[1]));
+    const scaled = clusterData.map(p=>[(p[0]-ryMean)/ryStd, (p[1]-dmMean)/dmStd]);
+
+    const { labels: clabels, centroids } = kMeans(scaled, 4);
+    const clusterColors = [COLORS.red, COLORS.gold, COLORS.blue, COLORS.purple];
+
+    const clusterDatasets = [0,1,2,3].map(i => ({
+      label: `Cluster ${i+1}`,
+      data: clusterData.filter((_,j)=>clabels[j]===i).map(p=>({x:p[0],y:p[1]})),
+      backgroundColor: clusterColors[i]+'66',
+      pointRadius: 3,
+      pointHoverRadius: 5,
+    }));
+
+    // Add centroids (denormalized)
+    clusterDatasets.push({
+      label: 'Centroids',
+      data: centroids.map(c=>({x:c[0]*ryStd+ryMean, y:c[1]*dmStd+dmMean})),
+      backgroundColor: 'white',
+      pointRadius: 8,
+      pointStyle: 'crossRot',
+      pointBorderColor: 'white',
+      pointBorderWidth: 2,
+    });
+
+    new Chart($('clusterChart'), {
+      type: 'scatter',
+      data: { datasets: clusterDatasets },
+      options: { ...CHART_DEFAULTS,
+        scales: {
+          x: { ...CHART_DEFAULTS.scales.x, title: { display: true, text: 'Release Year', color: '#555' } },
+          y: { ...CHART_DEFAULTS.scales.y, title: { display: true, text: 'Duration (min)', color: '#555' } }
+        }
+      }
+    });
+
+    // ── EXP 5: PDF / CDF ─────────────────────────────────
+    const ryears = data.map(r=>r.release_year).filter(Boolean).sort((a,b)=>a-b);
+    const minY = ryears[0], maxY = ryears[ryears.length-1];
+    const bins = [];
+    for (let y = minY; y <= maxY; y += 2) bins.push(y);
+    const pdfCounts = bins.map(b => ryears.filter(y=>y>=b && y<b+2).length);
+    const cdfVals   = bins.map((_,i) => pdfCounts.slice(0,i+1).reduce((a,b)=>a+b,0)/ryears.length);
+
+    let distChart = null;
+
+    function drawDist(type) {
+      if (distChart) distChart.destroy();
+      distChart = new Chart($('distChart'), {
+        type: type==='pdf' ? 'bar' : 'line',
+        data: {
+          labels: bins,
+          datasets: [{
+            label: type==='pdf' ? 'PDF (frequency density)' : 'CDF (cumulative probability)',
+            data: type==='pdf' ? pdfCounts : cdfVals,
+            backgroundColor: type==='pdf' ? 'rgba(229,9,20,0.4)' : 'rgba(0,180,216,0.15)',
+            borderColor: type==='pdf' ? COLORS.red : COLORS.blue,
+            borderWidth: type==='cdf' ? 2 : 1,
+            fill: type==='cdf',
+            tension: 0.4,
+            pointRadius: 0,
+          }]
+        },
+        options: { ...CHART_DEFAULTS, plugins: { legend: { display: false } } }
+      });
+    }
+
+    drawDist('pdf');
+    document.querySelectorAll('#distFilter .filter-btn').forEach(btn => {
+      btn.addEventListener('click', function() {
+        document.querySelectorAll('#distFilter .filter-btn').forEach(b=>b.classList.remove('active'));
+        this.classList.add('active');
+        drawDist(this.dataset.dist);
+      });
+    });
+
+    // ── EXP 6: Stats Table ───────────────────────────────
+    const movieDurs = movies.map(m=>m.duration_num).filter(Boolean);
+    const showSeasons = shows.map(s=>s.duration_num).filter(Boolean);
+
+    const variables = [
+      { name: 'Release Year',      arr: ryears },
+      { name: 'Movie Duration',    arr: movieDurs },
+      { name: 'TV Show Seasons',   arr: showSeasons },
+    ];
+
+    $('statsTableBody').innerHTML = variables.map(v => {
+      const sk = skewness(v.arr).toFixed(4);
+      const kt = kurtosis(v.arr).toFixed(4);
+      return `<tr>
+        <td>${v.name}</td>
+        <td>${mean(v.arr).toFixed(2)}</td>
+        <td>${stddev(v.arr).toFixed(2)}</td>
+        <td><span class="badge ${sk<0?'neg':'pos'}">${sk}</span></td>
+        <td><span class="badge ${kt<0?'neg':'pos'}">${kt}</span></td>
+      </tr>`;
+    }).join('');
+
+    // ── Genres ───────────────────────────────────────────
+    const genreFreq = {};
+    data.forEach(r => {
+      (r.listed_in||'').split(',').forEach(g => {
+        const genre = g.trim();
+        if (genre) genreFreq[genre] = (genreFreq[genre]||0)+1;
+      });
+    });
+    const topGenres = Object.entries(genreFreq).sort((a,b)=>b[1]-a[1]).slice(0,10);
+
+    new Chart($('genreChart'), {
+      type: 'bar',
+      data: {
+        labels: topGenres.map(e=>e[0]),
+        datasets: [{
+          label: 'Titles',
+          data: topGenres.map(e=>e[1]),
+          backgroundColor: [COLORS.red,COLORS.gold,COLORS.blue,COLORS.purple,COLORS.green,
+                            COLORS.teal,COLORS.red,COLORS.gold,COLORS.blue,COLORS.purple].map(c=>c+'99'),
+          borderColor:     [COLORS.red,COLORS.gold,COLORS.blue,COLORS.purple,COLORS.green,
+                            COLORS.teal,COLORS.red,COLORS.gold,COLORS.blue,COLORS.purple],
+          borderWidth: 1,
+        }]
+      },
+      options: { ...CHART_DEFAULTS,
+        indexAxis: 'y',
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ...CHART_DEFAULTS.scales.x },
+          y: { ...CHART_DEFAULTS.scales.y, ticks: { color: '#aaa', font: { size: 10 } } }
+        }
+      }
+    });
+
+    // ── Monthly Additions ────────────────────────────────
+    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const monthFreq  = new Array(12).fill(0);
+    data.forEach(r => { if (r.month_added) monthFreq[r.month_added-1]++; });
+
+    new Chart($('monthChart'), {
+      type: 'bar',
+      data: {
+        labels: monthNames,
+        datasets: [{
+          label: 'Titles Added',
+          data: monthFreq,
+          backgroundColor: monthFreq.map((v,i) =>
+            v === Math.max(...monthFreq) ? COLORS.red+'cc' : 'rgba(229,9,20,0.25)'),
+          borderColor: COLORS.red,
+          borderWidth: 1,
+        }]
+      },
+      options: { ...CHART_DEFAULTS, plugins: { legend: { display: false } } }
+    });
+
+    // ── Hide loader ──────────────────────────────────────
+    setTimeout(() => $('loader').classList.add('hide'), 2400);
+  },
+
+  error: function() {
+    $('loader').innerHTML = `
+      <div style="color:var(--red);font-family:'Bebas Neue',sans-serif;font-size:1.5rem">Dataset load failed</div>
+      <div style="color:var(--muted);font-size:0.8rem;margin-top:8px">Check your internet connection and refresh</div>`;
+  }
+});
+</script>
+</body>
+</html>
